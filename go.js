@@ -7,6 +7,16 @@ const PORT_LOG = Number(process.env.PORT_LOG) || 5001;
 const CODE_PAUSE = 1;
 const CODE_RESUME = 2;
 
+const REQUEST_LEAVE_GAME = Buffer.from([42,0]);
+const RESPONSE_LEAVE_GAME = Buffer.from([42,0,136,6,0,152,6,1]);
+
+const REQUEST_QUIT = Buffer.from([66,0]);
+const RESPONSE_QUIT = Buffer.from([66,0,136,6,0,152,6,6]);
+
+const RESPONSE_ALREADY_JOINED = Buffer.from([18,6,8,3,26,2,8,1]);
+const RESPONSE_ALREADY_INGAME = Buffer.from([136,6,0,146,6,17,65,108,114,101,97,100,121,32,105,110,32,97,32,103,97,109,101,152,6,3]);
+const RESPONSE_SUCCESS_JOINED = Buffer.from([18,2,8,1,136,6,0,152,6,3]);
+
 let socketToGame;
 let socketToBot;
 let socketToObserver;
@@ -60,6 +70,9 @@ function listenForBots() {
     socket.on("error", console.error);
 
     socket.on("message", function(data) {
+      if (is(data, REQUEST_LEAVE_GAME)) return socket.send(RESPONSE_LEAVE_GAME);
+      if (is(data, REQUEST_QUIT)) return socket.send(RESPONSE_QUIT);
+
       if (socketToObserver) socketToObserver.send(data);
       if (socket) sendToGame(socket, data);
     });
@@ -100,9 +113,14 @@ function connectToGame() {
       socket.on("error", console.error);
     
       socket.on("message", function(data) {
-        if (socketToObserver) socketToObserver.send(data);
-        if (request && socketToBot && (request.caller === socketToBot)) socketToBot.send(data);
-    
+        if (request && request.caller && (is(data, RESPONSE_ALREADY_JOINED) || is(data, RESPONSE_ALREADY_INGAME))) {
+          console.log("Sending success response for join game request by bot");
+          request.caller.send(RESPONSE_SUCCESS_JOINED);
+        } else {
+          if (socketToObserver) socketToObserver.send(data);
+          if (request && socketToBot && (request.caller === socketToBot)) socketToBot.send(data);
+        }
+
         request = null;
       });
     }
@@ -125,6 +143,18 @@ async function sendToGame(caller, data) {
   request = { caller, data };
 
   socketToGame.send(data);
+}
+
+function is(a, b) {
+  if (!a || !b || (a.length !== b.length)) return false;
+
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 function sleep(millis) {
