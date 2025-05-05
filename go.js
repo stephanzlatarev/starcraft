@@ -6,6 +6,8 @@ const PORT_LOG = Number(process.env.PORT_LOG) || 5001;
 
 const CODE_PAUSE = 1;
 const CODE_RESUME = 2;
+const CODE_START_SYNC = 3;
+const CODE_STOP_SYNC = 4;
 
 const REQUEST_LEAVE_GAME = Buffer.from([42,0]);
 const RESPONSE_LEAVE_GAME = Buffer.from([42,0,136,6,0,152,6,1]);
@@ -15,7 +17,11 @@ const RESPONSE_QUIT = Buffer.from([66,0,136,6,0,152,6,6]);
 
 const RESPONSE_ALREADY_JOINED = Buffer.from([18,6,8,3,26,2,8,1]);
 const RESPONSE_ALREADY_INGAME = Buffer.from([136,6,0,146,6,17,65,108,114,101,97,100,121,32,105,110,32,97,32,103,97,109,101,152,6,3]);
+const RESPONSE_ALREADY_REPLAY = Buffer.from([136,6,0,146,6,46,77,117,115,116,32,101,110,100,32,99,117,114,114,101,110,116,32,114,101,112,108,97,121,32,98,101,102,111,114,101,32,121,111,117,32,106,111,105,110,32,97,32,103,97,109,101,152,6,4]);
 const RESPONSE_SUCCESS_JOINED = Buffer.from([18,2,8,1,136,6,0,152,6,3]);
+
+const RESPONSE_ACTION_SUCCESS = Buffer.from([90,4,8,1,136,6,0,152,6,3]);
+const RESPONSE_DEBUG_SUCCESS = Buffer.from([162,1,0,136,6,0,152,6,3]);
 
 let socketToGame;
 let socketToBot;
@@ -23,11 +29,19 @@ let socketToObserver;
 
 let request = null;
 let isPaused = false;
+let isSynced = false;
 
 function setPaused(flag) {
-  console.log(flag ? "Game paused" : "Game resumed");
+  console.log(flag ? "Game is paused" : "Game is resumed");
 
   isPaused = flag;
+}
+
+// When the bot is play syncing along a replay, it steps and receives game info and observations but its other commands are ignored
+function setSynced(flag) {
+  console.log(flag ? "Bot is play syncing" : "Bot is not play syncing");
+
+  isSynced = flag;
 }
 
 function listenForObservers() {
@@ -44,6 +58,8 @@ function listenForObservers() {
       switch (data[0]) {
         case CODE_PAUSE: return setPaused(true);
         case CODE_RESUME: return setPaused(false);
+        case CODE_START_SYNC: return setSynced(true);
+        case CODE_STOP_SYNC: return setSynced(false);
       }
 
       if (socket) sendToGame(socket, data);
@@ -74,6 +90,14 @@ function listenForBots() {
       if (is(data, REQUEST_QUIT)) return socket.send(RESPONSE_QUIT);
 
       if (socketToObserver) socketToObserver.send(data);
+
+      if (isSynced) {
+        switch (data[0]) {
+          case 90: return socket.send(RESPONSE_ACTION_SUCCESS);
+          case 162: return socket.send(RESPONSE_DEBUG_SUCCESS);
+        }
+      }
+
       if (socket) sendToGame(socket, data);
     });
 
@@ -113,9 +137,10 @@ function connectToGame() {
       socket.on("error", console.error);
     
       socket.on("message", function(data) {
-        if (request && request.caller && (is(data, RESPONSE_ALREADY_JOINED) || is(data, RESPONSE_ALREADY_INGAME))) {
+        if (request && request.caller && (is(data, RESPONSE_ALREADY_JOINED) || is(data, RESPONSE_ALREADY_INGAME) || is(data, RESPONSE_ALREADY_REPLAY))) {
           console.log("Sending success response for join game request by bot");
           request.caller.send(RESPONSE_SUCCESS_JOINED);
+          if (socketToObserver) socketToObserver.send(RESPONSE_SUCCESS_JOINED);
         } else {
           if (socketToObserver) socketToObserver.send(data);
           if (request && socketToBot && (request.caller === socketToBot)) socketToBot.send(data);
