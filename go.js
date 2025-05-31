@@ -98,7 +98,14 @@ function listenForBots() {
         }
       }
 
-      if (socket) sendToGame(socket, data);
+      if (socket) {
+        if (data[0] === 18) {
+          // Replace request to join a multiplayer game with request to join a single game
+          sendToGame(socket, Buffer.from(replaceJoinRequest([...data])));
+        } else {
+          sendToGame(socket, data);
+        }
+      }
     });
 
     socket.on("close", function() {
@@ -158,6 +165,27 @@ function connectToGame() {
 
     connectToGame();
   });
+}
+
+function replaceJoinRequest(data) {
+  let race = [8,4];         // Random race
+  let options = [26,2,8,1]; // raw=true
+  let index = 2;
+
+  if (data[index] === 8) {
+    // Read race
+    race = data.slice(index, index + 2);
+    index += 2;
+  }
+
+  if (data[index] === 26) {
+    // Read options
+    options = data.slice(index, index + 1 + data[index + 1] + 1);
+  }
+
+  const size = race.length + options.length;
+
+  return [18, size, ...race, ...options];
 }
 
 async function sendToGame(caller, data) {
