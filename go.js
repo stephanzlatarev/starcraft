@@ -167,20 +167,31 @@ function connectToGame() {
   });
 }
 
+// Copies race and options but only if they are at the start of the request
 function replaceJoinRequest(data) {
   let race = [8,4];         // Random race
   let options = [26,2,8,1]; // raw=true
   let index = 2;
+  let more = true;
 
-  if (data[index] === 8) {
-    // Read race
-    race = data.slice(index, index + 2);
-    index += 2;
-  }
-
-  if (data[index] === 26) {
-    // Read options
-    options = data.slice(index, index + 1 + data[index + 1] + 1);
+  while (more) {
+    switch (data[index]) {
+      case 8: {
+        // Read race
+        race = data.slice(index, index + 2);
+        index += race.length;
+        break;
+      }
+      case 26: {
+        // Read options
+        options = data.slice(index, index + 2 + data[index + 1]);
+        index += options.length;
+        break;
+      }
+      default: {
+        more = false;
+      }
+    }
   }
 
   const size = race.length + options.length;
