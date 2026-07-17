@@ -1,3 +1,4 @@
+import fs from "fs";
 import WebSocket, { WebSocketServer } from "ws";
 import { spawn } from "node:child_process";
 
@@ -8,6 +9,7 @@ const CODE_PAUSE = 1;
 const CODE_RESUME = 2;
 const CODE_START_SYNC = 3;
 const CODE_STOP_SYNC = 4;
+const CODE_CREATE_GAME = 10;
 
 const REQUEST_LEAVE_GAME = Buffer.from([42,0]);
 const RESPONSE_LEAVE_GAME = Buffer.from([42,0,136,6,0,152,6,1]);
@@ -30,6 +32,9 @@ let socketToObserver;
 let request = null;
 let isPaused = false;
 let isSynced = false;
+
+let opponentGameProcess;
+let opponentBotProcess;
 
 function setPaused(flag) {
   console.log(flag ? "Game is paused" : "Game is resumed");
@@ -119,29 +124,31 @@ function listenForBots() {
 }
 
 function connectToGame() {
-  console.error("Starting StarCraft II...");
+  console.error("[SC2 1] Starting StarCraft II...");
 
-  const game = spawn("/StarCraftII/Versions/Base75689/SC2_x64", ["-listen", "127.0.0.1", "-port", "5555"]);
+  const game = spawn("/StarCraftII/Versions/Base75689/SC2_x64", ["-listen", "127.0.0.1", "-port", "10000"]);
 
   game.stdout.on("data", function(data) {
-    console.error(data.toString().trim());
+    console.error("[SC2 1]", data.toString().trim());
   });
 
   game.stderr.on("data", function(data) {
     const text = data.toString().trim();
 
-    console.error(text);
+    console.error("[SC2 1]", text);
 
     if (text === "Startup Phase 3 complete. Ready for commands.") {
-      const socket = new WebSocket("ws://127.0.0.1:5555/sc2api");
+      const socket = new WebSocket("ws://127.0.0.1:10000/sc2api");
 
       socket.on("open", function open() {
-        console.error("StarCraft II connected");
+        console.error("[SC2 1] StarCraft II connected");
 
         socketToGame = socket;
       });
 
-      socket.on("error", console.error);
+      socket.on("error", function(data) {
+        console.error("[SC2 1]", data.toString().trim());
+      });
     
       socket.on("message", function(data) {
         if (request && request.caller && (is(data, RESPONSE_ALREADY_JOINED) || is(data, RESPONSE_ALREADY_INGAME) || is(data, RESPONSE_ALREADY_REPLAY))) {
@@ -159,7 +166,7 @@ function connectToGame() {
   });
 
   game.on("close", function(details) {
-    console.error("StarCraft II exited");
+    console.error("[SC2 1] StarCraft II exited");
 
     if (details) console.error(details);
 
@@ -169,6 +176,7 @@ function connectToGame() {
 
 // Copies race and options but only if they are at the start of the request
 function replaceJoinRequest(data) {
+  const multiplayer = opponentGameProcess ? [34,6,8,148,78,16,148,78,42,6,8,149,78,16,149,78] : [];
   let race = [8,4];         // Random race
   let options = [26,2,8,1]; // raw=true
   let index = 2;
@@ -194,9 +202,111 @@ function replaceJoinRequest(data) {
     }
   }
 
-  const size = race.length + options.length;
+  const size = race.length + options.length + multiplayer.length;
 
-  return [18, size, ...race, ...options];
+  return [18, size, ...race, ...options, ...multiplayer];
+}
+
+async function handleCreateGame(data) {
+  let index = 6 + data[5]; // Move after the map name
+  let opponent = null;
+
+  // Loop through the players
+  while (data[index] === 26) {
+    if (is(data.slice(index, index + 6), [26, 4, 8, 1, 16, 4])) {
+      // This is the player bot
+    } else if (data[index + 3] !== 1) {
+      // This is not a player
+    } else {
+      // This is the opponent
+      const start = index + 8;
+      const end = start + data[index + 7];
+
+      opponent = String.fromCharCode.apply(null, data.slice(start, end));
+    }
+
+    index += 2 + data[index + 1];
+  }
+
+  if (opponent) {
+    // Start a second SC2_x64 process for the opponent. Restart a previously started one if any.
+    if (opponentGameProcess) {
+      opponentGameProcess.kill();
+      opponentGameProcess = null;
+    }
+    if (opponentBotProcess) {
+      opponentBotProcess.kill();
+      opponentBotProcess = null;
+    }
+
+    opponentGameProcess = spawn("/StarCraftII/Versions/Base75689/SC2_x64", ["-listen", "127.0.0.1", "-port", "10001"]);
+
+    opponentGameProcess.stdout.on("data", function(data) {
+      console.error("[SC2 2]", data.toString().trim());
+    });
+    
+    opponentGameProcess.stderr.on("data", function(data) {
+      const text = data.toString().trim();
+
+      console.error("[SC2 2]", text);
+
+      if (text === "Startup Phase 3 complete. Ready for commands.") {
+        console.log("Starting opponent", opponent);
+        const { command, args } = findOpponentExecutable(opponent);
+        args.push("--LadderServer", "127.0.0.1", "--GamePort", "10001", "--StartPort", "10001", "--OpponentId", "1");
+
+        opponentBotProcess = spawn(command, args, { cwd: "/bots/" + opponent });
+
+        opponentBotProcess.stdout.on("data", function(data) {
+          console.error("[", opponent, "]", data.toString().trim());
+        });
+        
+        opponentBotProcess.stderr.on("data", function(data) {
+          console.error("[", opponent, "]", data.toString().trim());
+        });
+
+        opponentBotProcess.on("close", function() {
+          console.error("[", opponent, "]", "Bot exited");
+          opponentBotProcess = null;
+
+          if (opponentGameProcess) {
+            opponentGameProcess.kill();
+            opponentGameProcess = null;
+          }
+        });
+      }
+    });
+
+    opponentGameProcess.on("close", function() {
+      console.error("[SC2 2] StarCraft II exited");
+      opponentGameProcess = null;
+
+      if (opponentBotProcess) {
+        opponentBotProcess.kill();
+        opponentBotProcess = null;
+      }
+    });
+  } else {
+    // Stop a previously started SC2_x64 process for a opponent if any.
+    if (opponentGameProcess) {
+      opponentGameProcess.kill();
+      opponentGameProcess = null;
+    }
+    if (opponentBotProcess) {
+      opponentBotProcess.kill();
+      opponentBotProcess = null;
+    }
+  }
+}
+
+function findOpponentExecutable(opponent) {
+  if (fs.existsSync(`/bots/${opponent}/${opponent}.js`)) {
+    return { command: "node", args: [`${opponent}.js`] };
+  } else if (fs.existsSync(`/bots/${opponent}/run.py`)) {
+    return { command: "python", args: ["run.py"] };
+  }
+
+  return { command: `./${opponent}`, args: [] };
 }
 
 async function sendToGame(caller, data) {
@@ -207,6 +317,10 @@ async function sendToGame(caller, data) {
   request = { caller, data };
 
   socketToGame.send(data);
+
+  if ((data[0] === CODE_CREATE_GAME) && (caller === socketToObserver)) {
+    await handleCreateGame(data);
+  }
 }
 
 function is(a, b) {

@@ -1,4 +1,4 @@
-FROM node:slim
+FROM aiarena/arenaclient-bot-base:v0.9.0
 
 WORKDIR /
 
